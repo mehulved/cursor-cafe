@@ -13,10 +13,13 @@ Usage highlights:
 
 from __future__ import annotations
 
+import argparse
+import socketserver
+import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 CAFE_LOGO = r"""
                                                                                                                 
@@ -66,18 +69,18 @@ class CafeMenu:
             13: MenuItem(13, "Strawberry Cookies"),
         }
 
-    def display(self) -> None:
+    def display(self, write: Callable[[str], None] = print) -> None:
         """Print the menu as a simple numbered list."""
-        print("\n" + "=" * 48)
-        print("            CAFE CURSOR MENU")
-        print("=" * 48)
+        write("\n" + "=" * 48)
+        write("            CAFE CURSOR MENU")
+        write("=" * 48)
 
         for item_id in sorted(self.items):
             item = self.items[item_id]
-            print(f"  {item.identifier:2d}. {item.name}")
+            write(f"  {item.identifier:2d}. {item.name}")
 
-        print("\nUse `add <item #>` to place things in your cart.")
-        print("=" * 48)
+        write("\nUse `add <item #>` to place things in your cart.")
+        write("=" * 48)
 
     def get_item(self, identifier: int) -> Optional[MenuItem]:
         """Return a menu item by identifier."""
@@ -110,20 +113,20 @@ class ShoppingCart:
         """Return a shallow copy for order storage."""
         return dict(self.items)
 
-    def display(self, menu: CafeMenu) -> None:
+    def display(self, menu: CafeMenu, write: Callable[[str], None] = print) -> None:
         """Render cart contents."""
-        print(f"\n{CAFE_LOGO}")
+        write(f"\n{CAFE_LOGO}")
         if not self.items:
-            print("\nCart is empty. Use `add <item #>` to begin.")
+            write("\nCart is empty. Use `add <item #>` to begin.")
             return
 
-        print("\n--- Cart ---")
+        write("\n--- Cart ---")
         for item_id, quantity in self.items.items():
             menu_item = menu.get_item(item_id)
             if not menu_item:
                 continue  # Should never happen
-            print(f"{menu_item.name} x{quantity}")
-        print("------------")
+            write(f"{menu_item.name} x{quantity}")
+        write("------------")
 
 
 @dataclass
@@ -144,28 +147,101 @@ class Order:
         return "Ready for pickup!"
 
 
-class CafeOrderApp:
-    """Command-style terminal interface for Cafe Cursor."""
+class CafeOrderSystem:
+    """Shared state for menu and placed orders."""
 
     def __init__(self) -> None:
         self.menu = CafeMenu()
-        self.cart = ShoppingCart()
         self.orders: Dict[int, Order] = {}
-        self.order_sequence = 1
+        self._order_sequence = 1
+        self._lock = threading.Lock()
+
+    def create_order(self, snapshot: Dict[int, int]) -> Order:
+        """Persist an order and return it."""
+        with self._lock:
+            order_id = self._order_sequence
+            self._order_sequence += 1
+        order = Order(order_id=order_id, items=snapshot, placed_at=datetime.now())
+        self.orders[order_id] = order
+        return order
+
+    def get_order(self, order_id: int) -> Optional[Order]:
+        return self.orders.get(order_id)
+
+
+class IOInterface:
+    """Basic IO contract for CLI or socket-based sessions."""
+
+    def write(self, message: str) -> None:  # pragma: no cover - simple wrapper
+        raise NotImplementedError
+
+    def readline(self, prompt: str = "") -> str:  # pragma: no cover - simple wrapper
+        raise NotImplementedError
+
+
+class ConsoleIO(IOInterface):
+    """Console implementation using input/print."""
+
+    def write(self, message: str) -> None:
+        print(message)
+
+    def readline(self, prompt: str = "") -> str:
+        return input(prompt)
+
+
+class SocketIO(IOInterface):
+    """Socket implementation compatible with telnet clients."""
+
+    def __init__(self, connection):
+        self.connection = connection
+        self.rfile = connection.makefile("rb")
+        self.wfile = connection.makefile("wb")
+
+    def write(self, message: str) -> None:
+        if not message.endswith("\n"):
+            message += "\n"
+        data = message.replace("\n", "\r\n").encode("utf-8")
+        self.wfile.write(data)
+        self.wfile.flush()
+
+    def readline(self, prompt: str = "") -> str:
+        if prompt:
+            self.write(prompt)
+        line = self.rfile.readline()
+        if not line:
+            raise EOFError
+        return line.decode("utf-8").rstrip("\r\n")
+
+    def close(self) -> None:
+        try:
+            self.rfile.close()
+            self.wfile.close()
+        finally:
+            self.connection.close()
+
+
+class CafeOrderApp:
+    """Command-style terminal interface for Cafe Cursor."""
+
+    def __init__(self, system: Optional[CafeOrderSystem] = None, io: Optional[IOInterface] = None) -> None:
+        self.system = system or CafeOrderSystem()
+        self.menu = self.system.menu
+        self.cart = ShoppingCart()
+        self.io = io or ConsoleIO()
 
     def run(self) -> None:
         """Main REPL loop."""
-        print("\nWelcome to Cafe Cursor!")
+        self.io.write("\nWelcome to Cafe Cursor!")
         self._print_help()
 
         while True:
             try:
-                raw_input = input("\ncmd> ").strip()
+                raw_input = self.io.readline("\ncmd> ").strip()
             except EOFError:
-                print("\nGoodbye!")
+                self.io.write("\nGoodbye!")
                 break
             except KeyboardInterrupt:
-                print("\n\nGoodbye!")
+                self.io.write("\n\nGoodbye!")
                 break
 
             if not raw_input:
@@ -176,11 +252,11 @@ class CafeOrderApp:
             args = parts[1:]
 
             if command == "menu":
-                self.menu.display()
+                self.menu.display(self.io.write)
             elif command == "add":
                 self._handle_add(args)
             elif command == "cart":
-                self.cart.display(self.menu)
+                self.cart.display(self.menu, self.io.write)
             elif command == "order":
                 self._handle_order()
             elif command == "status":
@@ -188,26 +264,26 @@ class CafeOrderApp:
             elif command in {"help", "?"}:
                 self._print_help()
             elif command in {"exit", "quit"}:
-                print("See you next time. ☕")
+                self.io.write("See you next time. ☕")
                 break
             else:
-                print("Unknown command. Type `help` for options.")
+                self.io.write("Unknown command. Type `help` for options.")
 
     def _handle_add(self, args: List[str]) -> None:
         """Parse and add menu items to the cart."""
         if not args:
-            print("Usage: add <item #> [quantity]")
+            self.io.write("Usage: add <item #> [quantity]")
             return
 
         try:
             item_id = int(args[0])
         except ValueError:
-            print("Item number must be numeric.")
+            self.io.write("Item number must be numeric.")
             return
 
         item = self.menu.get_item(item_id)
         if not item:
-            print(f"Item #{item_id} is not on the menu.")
+            self.io.write(f"Item #{item_id} is not on the menu.")
             return
 
         quantity = 1
@@ -215,72 +291,99 @@ class CafeOrderApp:
             try:
                 quantity = int(args[1])
             except ValueError:
-                print("Quantity must be numeric.")
+                self.io.write("Quantity must be numeric.")
                 return
 
         try:
             self.cart.add(item_id, quantity)
         except ValueError as exc:
-            print(str(exc))
+            self.io.write(str(exc))
             return
 
         plural = "s" if quantity > 1 else ""
-        print(f"Added {quantity} {item.name}{plural} to cart.")
+        self.io.write(f"Added {quantity} {item.name}{plural} to cart.")
 
     def _handle_order(self) -> None:
         """Create an order from the cart."""
         if self.cart.is_empty():
-            print("Cart is empty. Add items first via `add <item #>`.")
+            self.io.write("Cart is empty. Add items first via `add <item #>`.")
             return
 
-        order_id = self.order_sequence
-        self.order_sequence += 1
-
-        order = Order(order_id=order_id, items=self.cart.snapshot(), placed_at=datetime.now())
-        self.orders[order_id] = order
+        order = self.system.create_order(self.cart.snapshot())
         self.cart.clear()
 
-        print("\n" + "=" * 48)
-        print("ORDER CONFIRMED")
-        print(f"Order ID: {order_id}")
-        print("Use `status {order_id}` anytime to check progress.")
-        print("We'll ping you when everything is ready!")
-        print("=" * 48)
+        self.io.write("\n" + "=" * 48)
+        self.io.write("ORDER CONFIRMED")
+        self.io.write(f"Order ID: {order.order_id}")
+        self.io.write(f"Use `status {order.order_id}` anytime to check progress.")
+        self.io.write("We'll ping you when everything is ready!")
+        self.io.write("=" * 48)
 
     def _handle_status(self, args: List[str]) -> None:
         """Report status for a known order id."""
         if not args:
-            print("Usage: status <order id>")
+            self.io.write("Usage: status <order id>")
             return
 
         try:
             order_id = int(args[0])
         except ValueError:
-            print("Order id must be an integer.")
+            self.io.write("Order id must be an integer.")
             return
-        order = self.orders.get(order_id)
+        order = self.system.get_order(order_id)
         if not order:
-            print(f"No order found with id {order_id}.")
+            self.io.write(f"No order found with id {order_id}.")
             return
 
-        print(f"{order_id}: {order.status()}")
+        self.io.write(f"{order_id}: {order.status()}")
 
     def _print_help(self) -> None:
         """Show supported commands."""
-        print(f"\n{CAFE_LOGO}")
-        print("Commands:")
-        print("  menu                    Show Cafe Cursor offerings")
-        print("  add <item #> [qty]      Add menu item to cart")
-        print("  cart                    Review current cart")
-        print("  order                   Place the current cart")
-        print("  status <order id>       Check order status (integers only)")
-        print("  help                    Show this message")
-        print("  exit                    Quit the app")
+        self.io.write(f"\n{CAFE_LOGO}")
+        self.io.write("Commands:")
+        self.io.write("  menu                    Show Cafe Cursor offerings")
+        self.io.write("  add <item #> [qty]      Add menu item to cart")
+        self.io.write("  cart                    Review current cart")
+        self.io.write("  order                   Place the current cart")
+        self.io.write("  status <order id>       Check order status (integers only)")
+        self.io.write("  help                    Show this message")
+        self.io.write("  exit                    Quit the app")
+
+
+class ThreadedCafeServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+
+
+def serve_over_tcp(system: CafeOrderSystem, host: str, port: int) -> None:
+    """Start a telnet-friendly TCP server."""
+
+    class CafeRequestHandler(socketserver.BaseRequestHandler):
+        def handle(self_inner) -> None:
+            io = SocketIO(self_inner.request)
+            app = CafeOrderApp(system=system, io=io)
+            try:
+                app.run()
+            finally:
+                io.close()
+
+    with ThreadedCafeServer((host, port), CafeRequestHandler) as server:
+        print(f"Cafe Cursor server listening on {host}:{port}")
+        server.serve_forever()
 
 
 def main() -> None:
-    app = CafeOrderApp()
-    app.run()
+    parser = argparse.ArgumentParser(description="Cafe Cursor ordering app")
+    parser.add_argument("--serve", action="store_true", help="Start a TCP server instead of local CLI")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind address for the TCP server")
+    parser.add_argument("--port", type=int, default=5555, help="Port for the TCP server")
+    args = parser.parse_args()
+
+    system = CafeOrderSystem()
+    if args.serve:
+        serve_over_tcp(system, args.host, args.port)
+    else:
+        app = CafeOrderApp(system=system)
+        app.run()
 
 
 if __name__ == "__main__":
