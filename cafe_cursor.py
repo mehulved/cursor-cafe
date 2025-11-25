@@ -250,6 +250,17 @@ class CafeOrderSystem:
             self.orders[order_id] = order
         return order
 
+    def mark_ready(self, order_id: int) -> Optional[Order]:
+        """Set the ready timestamp for an order."""
+        order = self.get_order(order_id)
+        if not order:
+            return None
+        ready_at = datetime.now()
+        self.db.update_ready_time(order_id, ready_at)
+        order.ready_at = ready_at
+        self.orders[order_id] = order
+        return order
+
 
 class IOInterface:
     """Basic IO contract for CLI or socket-based sessions."""
@@ -343,6 +354,8 @@ class CafeOrderApp:
                 self._handle_order()
             elif command == "status":
                 self._handle_status(args)
+            elif command == "ready":
+                self._handle_ready(args)
             elif command in {"help", "?"}:
                 self._print_help()
             elif command in {"exit", "quit"}:
@@ -419,6 +432,25 @@ class CafeOrderApp:
 
         self.io.write(f"{order_id}: {order.status()}")
 
+    def _handle_ready(self, args: List[str]) -> None:
+        """Mark an order as ready (records ready timestamp)."""
+        if not args:
+            self.io.write("Usage: ready <order id>")
+            return
+
+        try:
+            order_id = int(args[0])
+        except ValueError:
+            self.io.write("Order id must be an integer.")
+            return
+
+        order = self.system.mark_ready(order_id)
+        if not order:
+            self.io.write(f"No order found with id {order_id}.")
+            return
+
+        self.io.write(f"Order {order_id} marked ready at {order.ready_at.isoformat(timespec='seconds')}.")
+
     def _print_help(self) -> None:
         """Show supported commands."""
         self.io.write(f"\n{CAFE_LOGO}")
@@ -428,6 +460,7 @@ class CafeOrderApp:
         self.io.write("  cart                    Review current cart")
         self.io.write("  order                   Place the current cart")
         self.io.write("  status <order id>       Check order status (integers only)")
+        self.io.write("  ready <order id>        Mark an order as ready (timestamps it)")
         self.io.write("  help                    Show this message")
         self.io.write("  exit                    Quit the app")
 
