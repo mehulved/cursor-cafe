@@ -14,7 +14,9 @@ Usage highlights:
 from __future__ import annotations
 
 import argparse
+import json
 import socketserver
+import sqlite3
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
@@ -136,37 +138,117 @@ class Order:
     order_id: int
     items: Dict[int, int]
     placed_at: datetime
+    ready_at: Optional[datetime] = None
 
     def status(self) -> str:
         """Derive a friendly status message from elapsed time."""
+        if self.ready_at:
+            return "Ready for pickup!"
+
         elapsed = datetime.now() - self.placed_at
         if elapsed < timedelta(minutes=2):
             return "Barista received your order."
         if elapsed < timedelta(minutes=5):
             return "Drinks are being prepared."
-        return "Ready for pickup!"
+        return "Almost ready..."
+
+
+class CafeDatabase:
+    """Lightweight SQLite wrapper for persisting orders."""
+
+    def __init__(self, path: str = "cafe_cursor.db") -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        self._ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, check_same_thread=False)
+        return conn
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    items TEXT NOT NULL,
+                    placed_at TEXT NOT NULL,
+                    ready_at TEXT
+                )
+                """
+            )
+            conn.commit()
+
+    def load_orders(self) -> Dict[int, Order]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id, items, placed_at, ready_at FROM orders ORDER BY id").fetchall()
+        return {row[0]: self._row_to_order(row) for row in rows}
+
+    def fetch_order(self, order_id: int) -> Optional[Order]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, items, placed_at, ready_at FROM orders WHERE id = ?", (order_id,)
+            ).fetchone()
+        if not row:
+            return None
+        return self._row_to_order(row)
+
+    def create_order(self, items: Dict[int, int]) -> Order:
+        """Persist a new order and return it."""
+        snapshot = dict(items)
+        placed_at = datetime.now()
+        payload = json.dumps(snapshot)
+
+        with self._lock:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "INSERT INTO orders (items, placed_at, ready_at) VALUES (?, ?, ?)",
+                    (payload, placed_at.isoformat(), None),
+                )
+                conn.commit()
+                order_id = cursor.lastrowid
+
+        return Order(order_id=order_id, items=snapshot, placed_at=placed_at)
+
+    def update_ready_time(self, order_id: int, ready_at: datetime) -> None:
+        """Mark an order as ready. (Not yet used externally.)"""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE orders SET ready_at = ? WHERE id = ?",
+                (ready_at.isoformat(), order_id),
+            )
+            conn.commit()
+
+    def _row_to_order(self, row: sqlite3.Row) -> Order:
+        order_id, items_blob, placed_at_str, ready_at_str = row
+        items_dict = {int(k): int(v) for k, v in json.loads(items_blob).items()}
+        placed_at = datetime.fromisoformat(placed_at_str)
+        ready_at = datetime.fromisoformat(ready_at_str) if ready_at_str else None
+        return Order(order_id=order_id, items=items_dict, placed_at=placed_at, ready_at=ready_at)
 
 
 class CafeOrderSystem:
     """Shared state for menu and placed orders."""
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: str = "cafe_cursor.db") -> None:
         self.menu = CafeMenu()
-        self.orders: Dict[int, Order] = {}
-        self._order_sequence = 1
-        self._lock = threading.Lock()
+        self.db = CafeDatabase(db_path)
+        self.orders: Dict[int, Order] = self.db.load_orders()
 
     def create_order(self, snapshot: Dict[int, int]) -> Order:
         """Persist an order and return it."""
-        with self._lock:
-            order_id = self._order_sequence
-            self._order_sequence += 1
-        order = Order(order_id=order_id, items=snapshot, placed_at=datetime.now())
-        self.orders[order_id] = order
+        order = self.db.create_order(snapshot)
+        self.orders[order.order_id] = order
         return order
 
     def get_order(self, order_id: int) -> Optional[Order]:
-        return self.orders.get(order_id)
+        order = self.orders.get(order_id)
+        if order:
+            return order
+        order = self.db.fetch_order(order_id)
+        if order:
+            self.orders[order_id] = order
+        return order
 
 
 class IOInterface:
@@ -376,9 +458,10 @@ def main() -> None:
     parser.add_argument("--serve", action="store_true", help="Start a TCP server instead of local CLI")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address for the TCP server")
     parser.add_argument("--port", type=int, default=5555, help="Port for the TCP server")
+    parser.add_argument("--db-path", default="cafe_cursor.db", help="SQLite database path")
     args = parser.parse_args()
 
-    system = CafeOrderSystem()
+    system = CafeOrderSystem(db_path=args.db_path)
     if args.serve:
         serve_over_tcp(system, args.host, args.port)
     else:
