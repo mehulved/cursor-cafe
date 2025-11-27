@@ -6,7 +6,8 @@ A terminal-based ordering system for Cafe Cursor, featuring separate frontend (c
 
 - 🛒 **Customer Ordering**: Browse menu, add items to cart, and place orders
 - 👨‍🍳 **Staff Management**: View all orders, check status, and mark orders as ready
-- 💾 **SQLite Persistence**: All orders persist across restarts
+- 💾 **SQLite Persistence**: All orders and menu items persist across restarts
+- 📋 **Database-Driven Menu**: Menu stored in database, easily customizable via SQL
 - 🌐 **Telnet Support**: Access via telnet for both frontend and backend
 - ⏱️ **Timestamp Tracking**: Automatic tracking of order placement and ready times for analytics
 
@@ -216,6 +217,42 @@ bknd> ready 42
 Order 42 marked ready at 2024-01-15 14:35:00.
 ```
 
+#### `menu-list`
+Display all menu items with their IDs.
+
+**Example:**
+```
+bknd> menu-list
+
+Menu Items:
+  1. Black (Hot)
+  2. Black (Cold)
+  3. White (Hot)
+  ...
+```
+
+#### `menu-add <id> <name>`
+Add a new menu item. The menu is automatically refreshed after adding.
+
+**Example:**
+```
+bknd> menu-add 14 "Iced Matcha"
+Menu item 14 'Iced Matcha' added successfully.
+```
+
+**Note:** The item ID must be unique. If the ID already exists, the command will fail.
+
+#### `menu-remove <id>`
+Remove a menu item from the menu. The menu is automatically refreshed after removal.
+
+**Example:**
+```
+bknd> menu-remove 13
+Menu item 13 'Strawberry Cookies' removed successfully.
+```
+
+**Warning:** Be careful when removing menu items that may be referenced in existing orders.
+
 #### `help` or `?`
 Display available backend commands.
 
@@ -225,6 +262,8 @@ Exit the backend console.
 ---
 
 ## Menu Items
+
+The menu is stored in the database and can be customized. The default menu includes:
 
 | # | Item |
 |---|------|
@@ -242,14 +281,68 @@ Exit the backend console.
 | 12 | Chocolate Cookies |
 | 13 | Strawberry Cookies |
 
+See the [Menu Management](#menu-management) section below for instructions on how to customize the menu.
+
 ## Database
 
-The app uses SQLite to persist all orders. By default, the database file is `cafe_cursor.db` in the current directory.
+The app uses SQLite to persist all orders and menu items. By default, the database file is `cafe_cursor.db` in the current directory.
 
 **Database Schema:**
 - `orders` table with columns: `id`, `items` (JSON), `placed_at`, `ready_at`
+- `menu_items` table with columns: `id` (PRIMARY KEY), `name` (UNIQUE)
 
 **Note:** The database file is automatically created on first run and is excluded from git (see `.gitignore`).
+
+### Menu Management
+
+The menu is stored in the `menu_items` table. On first run, the app automatically initializes the menu with 13 default items. You can manage the menu in two ways:
+
+#### Using Backend Commands (Recommended)
+
+The easiest way to manage the menu is through the backend interface:
+
+```bash
+# Connect to backend
+python cafe_cursor.py --backend
+# or via telnet: telnet localhost 6000
+
+# List all menu items
+bknd> menu-list
+
+# Add a new menu item
+bknd> menu-add 14 "Iced Matcha"
+
+# Remove a menu item
+bknd> menu-remove 13
+```
+
+**Advantages:** Changes take effect immediately without restarting the app. The menu is automatically refreshed after each operation.
+
+#### Using SQLite Directly
+
+You can also update the menu directly in the database using SQLite:
+
+**View current menu:**
+```bash
+sqlite3 cafe_cursor.db "SELECT id, name FROM menu_items ORDER BY id;"
+```
+
+**Add a new menu item:**
+```bash
+sqlite3 cafe_cursor.db "INSERT INTO menu_items (id, name) VALUES (14, 'New Item Name');"
+```
+
+**Update an existing menu item:**
+```bash
+sqlite3 cafe_cursor.db "UPDATE menu_items SET name = 'Updated Name' WHERE id = 1;"
+```
+
+**Delete a menu item:**
+```bash
+sqlite3 cafe_cursor.db "DELETE FROM menu_items WHERE id = 13;"
+```
+
+**Note:** When using SQL directly, you'll need to restart the app for changes to take effect. When adding or modifying menu items, make sure the `id` values are unique. Be careful when deleting items that may be referenced in existing orders.
 
 ## Example Workflow
 
