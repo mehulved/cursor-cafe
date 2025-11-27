@@ -157,6 +157,7 @@ We'll ping you when everything is ready!
 
 #### `status <order id>`
 Check the status of a specific order.
+Note: Third part tools should query order status every 15-30 seconds. Ideal interval is 20 seconds.
 
 **Example:**
 ```
