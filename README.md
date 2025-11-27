@@ -395,6 +395,30 @@ The app is written in Python 3 using only standard library modules:
 - `argparse` for command-line argument parsing
 - `threading` for concurrent request handling
 
+### Testing
+
+The project includes comprehensive unit tests using Python's `unittest` framework. All tests use temporary databases to ensure isolation.
+
+**Run all tests:**
+```bash
+python3 test_cafe_cursor.py
+```
+
+**Run tests with verbose output:**
+```bash
+python3 test_cafe_cursor.py -v
+```
+
+**Test coverage includes:**
+- Menu operations (loading, adding, removing items)
+- Shopping cart functionality
+- Order creation and status tracking
+- Database operations (CRUD for orders and menu items)
+- Order system integration
+- IO interfaces
+
+The test suite currently includes 46 tests covering all core functionality.
+
 ## License
 
 This is a demo project for Cafe Cursor.
