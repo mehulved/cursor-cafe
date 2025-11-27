@@ -1,6 +1,6 @@
 # Cafe Cursor TODOs
 
-- [ ] Build backend to list/update cafe orders
+- [x] Build backend to list/update cafe orders
 - [x] Add SQLite persistence for orders/app data
 - [x] Capture order placed/ready timestamps for analytics
 - [ ] Add unit tests for core features
