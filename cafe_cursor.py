@@ -521,7 +521,7 @@ class CafeBackendApp:
             placed = order.placed_at.strftime("%Y-%m-%d %H:%M:%S")
             ready = order.ready_at.strftime("%Y-%m-%d %H:%M:%S") if order.ready_at else "-"
             summary = summarize_order_items(self.menu, order.items)
-            self.io.write(f"- #{order.order_id:03d} [{status}] placed {placed} ready {ready}")
+            self.io.write(f"- {order.order_id} [{status}] placed {placed} ready {ready}")
             self.io.write(f"    {summary}")
 
     def _handle_status(self, args: List[str]) -> None:
