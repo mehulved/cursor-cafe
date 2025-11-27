@@ -1,1 +1,3 @@
 cafe_cursor.db
+__pycache__
+*.pyc
