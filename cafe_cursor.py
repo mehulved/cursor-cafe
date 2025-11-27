@@ -59,22 +59,28 @@ class MenuItem:
 class CafeMenu:
     """Stores and renders the Cafe Cursor menu."""
 
-    def __init__(self) -> None:
-        self.items: Dict[int, MenuItem] = {
-            1: MenuItem(1, "Black (Hot)"),
-            2: MenuItem(2, "Black (Cold)"),
-            3: MenuItem(3, "White (Hot)"),
-            4: MenuItem(4, "White (Cold)"),
-            5: MenuItem(5, "Mocha (Hot)"),
-            6: MenuItem(6, "Mocha (Cold)"),
-            7: MenuItem(7, "Hot Chocolate"),
-            8: MenuItem(8, "Cold Chocolate"),
-            9: MenuItem(9, "Espresso Tonic"),
-            10: MenuItem(10, "Strawberry Latte"),
-            11: MenuItem(11, "Vanilla Latte"),
-            12: MenuItem(12, "Chocolate Cookies"),
-            13: MenuItem(13, "Strawberry Cookies"),
-        }
+    def __init__(self, db: Optional["CafeDatabase"] = None) -> None:
+        self.db = db
+        self.items: Dict[int, MenuItem] = {}
+        if self.db:
+            self.items = self.db.load_menu_items()
+        else:
+            # Fallback to hardcoded menu if no database provided
+            self.items = {
+                1: MenuItem(1, "Black (Hot)"),
+                2: MenuItem(2, "Black (Cold)"),
+                3: MenuItem(3, "White (Hot)"),
+                4: MenuItem(4, "White (Cold)"),
+                5: MenuItem(5, "Mocha (Hot)"),
+                6: MenuItem(6, "Mocha (Cold)"),
+                7: MenuItem(7, "Hot Chocolate"),
+                8: MenuItem(8, "Cold Chocolate"),
+                9: MenuItem(9, "Espresso Tonic"),
+                10: MenuItem(10, "Strawberry Latte"),
+                11: MenuItem(11, "Vanilla Latte"),
+                12: MenuItem(12, "Chocolate Cookies"),
+                13: MenuItem(13, "Strawberry Cookies"),
+            }
 
     def display(self, write: Callable[[str], None] = print) -> None:
         """Print the menu as a simple numbered list."""
@@ -192,7 +198,16 @@ class CafeDatabase:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS menu_items (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE
+                )
+                """
+            )
             conn.commit()
+            self._initialize_default_menu()
 
     def load_orders(self) -> Dict[int, Order]:
         with self._connect() as conn:
@@ -241,13 +256,65 @@ class CafeDatabase:
         ready_at = datetime.fromisoformat(ready_at_str) if ready_at_str else None
         return Order(order_id=order_id, items=items_dict, placed_at=placed_at, ready_at=ready_at)
 
+    def _initialize_default_menu(self) -> None:
+        """Populate menu with default items if empty."""
+        with self._connect() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM menu_items").fetchone()[0]
+            if count == 0:
+                default_items = [
+                    (1, "Black (Hot)"),
+                    (2, "Black (Cold)"),
+                    (3, "White (Hot)"),
+                    (4, "White (Cold)"),
+                    (5, "Mocha (Hot)"),
+                    (6, "Mocha (Cold)"),
+                    (7, "Hot Chocolate"),
+                    (8, "Cold Chocolate"),
+                    (9, "Espresso Tonic"),
+                    (10, "Strawberry Latte"),
+                    (11, "Vanilla Latte"),
+                    (12, "Chocolate Cookies"),
+                    (13, "Strawberry Cookies"),
+                ]
+                conn.executemany(
+                    "INSERT INTO menu_items (id, name) VALUES (?, ?)",
+                    default_items,
+                )
+                conn.commit()
+
+    def load_menu_items(self) -> Dict[int, MenuItem]:
+        """Load all menu items from the database."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id, name FROM menu_items ORDER BY id").fetchall()
+        return {row[0]: MenuItem(row[0], row[1]) for row in rows}
+
+    def add_menu_item(self, item_id: int, name: str) -> bool:
+        """Add a new menu item. Returns True if successful, False if id already exists."""
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    "INSERT INTO menu_items (id, name) VALUES (?, ?)",
+                    (item_id, name),
+                )
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def remove_menu_item(self, item_id: int) -> bool:
+        """Remove a menu item. Returns True if successful, False if not found."""
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM menu_items WHERE id = ?", (item_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
 
 class CafeOrderSystem:
     """Shared state for menu and placed orders."""
 
     def __init__(self, db_path: str = "cafe_cursor.db") -> None:
-        self.menu = CafeMenu()
         self.db = CafeDatabase(db_path)
+        self.menu = CafeMenu(db=self.db)
         self.orders: Dict[int, Order] = self.db.load_orders()
 
     def refresh_orders(self) -> None:
@@ -282,6 +349,24 @@ class CafeOrderSystem:
         order.ready_at = ready_at
         self.orders[order_id] = order
         return order
+
+    def refresh_menu(self) -> None:
+        """Reload menu items from the database."""
+        self.menu.items = self.db.load_menu_items()
+
+    def add_menu_item(self, item_id: int, name: str) -> bool:
+        """Add a menu item and refresh the menu. Returns True if successful."""
+        if self.db.add_menu_item(item_id, name):
+            self.refresh_menu()
+            return True
+        return False
+
+    def remove_menu_item(self, item_id: int) -> bool:
+        """Remove a menu item and refresh the menu. Returns True if successful."""
+        if self.db.remove_menu_item(item_id):
+            self.refresh_menu()
+            return True
+        return False
 
 
 class IOInterface:
@@ -501,6 +586,12 @@ class CafeBackendApp:
                 self._handle_status(args)
             elif command == "ready":
                 self._handle_ready(args)
+            elif command == "menu-list":
+                self._handle_menu_list()
+            elif command == "menu-add":
+                self._handle_menu_add(args)
+            elif command == "menu-remove":
+                self._handle_menu_remove(args)
             elif command in {"help", "?"}:
                 self._print_help()
             elif command in {"exit", "quit"}:
@@ -566,12 +657,67 @@ class CafeBackendApp:
         ready_at = order.ready_at.strftime("%Y-%m-%d %H:%M:%S") if order.ready_at else "unknown"
         self.io.write(f"Order {order_id} marked ready at {ready_at}.")
 
+    def _handle_menu_list(self) -> None:
+        """Display all menu items."""
+        items = self.menu.all_items()
+        if not items:
+            self.io.write("\nNo menu items found.")
+            return
+
+        self.io.write("\nMenu Items:")
+        for item in items:
+            self.io.write(f"  {item.identifier:2d}. {item.name}")
+
+    def _handle_menu_add(self, args: List[str]) -> None:
+        """Add a new menu item."""
+        if len(args) < 2:
+            self.io.write("Usage: menu-add <item id> <name>")
+            self.io.write("Example: menu-add 14 'New Coffee'")
+            return
+
+        try:
+            item_id = int(args[0])
+        except ValueError:
+            self.io.write("Item id must be an integer.")
+            return
+
+        name = " ".join(args[1:])
+        if self.system.add_menu_item(item_id, name):
+            self.io.write(f"Menu item {item_id} '{name}' added successfully.")
+        else:
+            self.io.write(f"Failed to add menu item. Item id {item_id} may already exist.")
+
+    def _handle_menu_remove(self, args: List[str]) -> None:
+        """Remove a menu item."""
+        if not args:
+            self.io.write("Usage: menu-remove <item id>")
+            return
+
+        try:
+            item_id = int(args[0])
+        except ValueError:
+            self.io.write("Item id must be an integer.")
+            return
+
+        item = self.menu.get_item(item_id)
+        if not item:
+            self.io.write(f"Menu item {item_id} not found.")
+            return
+
+        if self.system.remove_menu_item(item_id):
+            self.io.write(f"Menu item {item_id} '{item.name}' removed successfully.")
+        else:
+            self.io.write(f"Failed to remove menu item {item_id}.")
+
     def _print_help(self) -> None:
         self.io.write(f"\n{CAFE_LOGO}")
         self.io.write("Backend Commands:")
         self.io.write("  list                    Show all orders and status")
         self.io.write("  status <order id>       Show details for one order")
         self.io.write("  ready <order id>        Mark order as ready")
+        self.io.write("  menu-list               Show all menu items")
+        self.io.write("  menu-add <id> <name>    Add a new menu item")
+        self.io.write("  menu-remove <id>       Remove a menu item")
         self.io.write("  help                    Show this message")
         self.io.write("  exit                    Quit the console")
 
