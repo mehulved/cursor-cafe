@@ -1,0 +1,28 @@
+[Unit]
+Description=Cafe Cursor Frontend Service
+After=network.target
+
+[Service]
+Type=simple
+# Set your actual user and working directory
+User=root
+WorkingDirectory=/root/cursor-cafe/
+
+# If using venv:
+# ExecStart=/root/cursor-cafe/.venv/bin/python /root/cursor-cafe/cafe_cursor.py --serve --frontend-port 5555
+# Or if using system python:
+ExecStart=/usr/bin/python3 /root/cursor-cafe/cafe_cursor.py --serve --frontend-host 0.0.0.0 --frontend-port 5555
+
+Restart=always
+RestartSec=5
+
+# Optional: log to journal
+StandardOutput=journal
+StandardError=journal
+
+# Optional environment variables
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+

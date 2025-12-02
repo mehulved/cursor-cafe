@@ -1,0 +1,25 @@
+[Unit]
+Description=Cafe Cursor Backend API Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/cursor-cafe/
+
+# If using venv:
+# ExecStart=/root/cursor-cafe/.venv/bin/python /root/cursor-cafe/cafe_cursor.py --serve-backend --backend-port 6000
+# Or if using system python:
+ExecStart=/usr/bin/python3 /root/cursor-cafe/cafe_cursor.py --serve-backend --backend-host 0.0.0.0 --backend-port 6000
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+
